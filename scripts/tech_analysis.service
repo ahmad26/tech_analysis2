@@ -1,0 +1,13 @@
+[Unit]
+Description=Crypto Candlestick Pattern Scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__WORKDIR__
+EnvironmentFile=__WORKDIR__/.env
+ExecStart=__WORKDIR__/.venv/bin/python -m src.main
+StandardOutput=journal
+StandardError=journal

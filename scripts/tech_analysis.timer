@@ -1,0 +1,10 @@
+[Unit]
+Description=Run crypto scanner every 15 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=15min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tech-analysis"
+version = "0.1.0"
+description = "Crypto candlestick pattern alert system"
+requires-python = ">=3.9"
+dependencies = [
+    "ccxt>=4.0",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "python-telegram-bot>=21.0",
+    "APScheduler>=3.10,<4.0",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

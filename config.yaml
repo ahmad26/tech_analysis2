@@ -1,0 +1,51 @@
+exchange: binance
+
+symbols:
+  - BTC/USDT
+  - ETH/USDT
+  - BNB/USDT
+  - SOL/USDT
+  - XRP/USDT
+  - DOGE/USDT
+  - ADA/USDT
+  - AVAX/USDT
+  - DOT/USDT
+  - LINK/USDT
+
+timeframes:
+  - 15m
+  - 1h
+  - 4h
+  - 1d
+
+patterns:
+  - bullish_engulfing
+  - bearish_engulfing
+  - doji
+  - evening_star
+  - shooting_star
+
+candles_to_fetch: 210
+state_file: alert_state.json
+state_ttl_hours: 48
+
+# Low-volatility regime filter (chop guard).
+# A signal is skipped when the candle's ATR(14)/close is below the floor for its
+# timeframe — reversal/continuation patterns whipsaw in flat, quiet markets, and
+# tight low-vol stops get eaten by fees (~0.09% round-trip ≈ 0.16-0.29R when
+# ATR% is 0.25-0.5%). Chosen from scripts/sweep_atr_filter.py.
+#   15m: deep sweep (~5mo, ~16-19k trades), per-leg fee model incl. maker TP. 0.75%
+#        nets ~-0.022R (losing after fees); 1.0% is the first net-positive rung
+#        (+0.011R, ~924 trades). Raised 0.0075 → 0.010 on 2026-06-09. Maker TP does
+#        not shift the floor (rolling-stop exits are taker). Still marginal (~+10R/5mo).
+#   1h:  deep sweep (~16mo, 24k trades) shows expectancy HIGHEST at 0 and falling
+#        as you filter → no floor. (Shallow 42-day sweep's "0.5% sweet spot" was a
+#        single-regime artifact.)
+#   4h:  ~5.5mo, 1847 trades: smooth lift +0.081R → +0.093R at 1.5%. Worth a deep
+#        re-sweep to confirm, like 1h's story flipped with more history.
+#   1d:  ~2.75yr: flat under filtering → no floor.
+min_atr_pct:
+  15m: 0.010    # 1.0% — first net-positive rung after fees (+0.011R); raised from 0.0075 on 2026-06-09
+  1h:  0.0      # no filter — filtering provably lowers expectancy over 16 months
+  4h:  0.015    # 1.50% — +0.081R → +0.093R, keeps ~1400 trades
+  1d:  0.0      # no filter — daily expectancy is flat under filtering
