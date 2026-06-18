@@ -25,6 +25,17 @@ class AppConfig:
     # ATR(14)/close is below the threshold for its timeframe (low-vol chop filter).
     # Empty dict = no filtering. Keys are timeframe strings (e.g. "4h").
     min_atr_pct: dict[str, float] = field(default_factory=dict)
+    # Per-timeframe pattern overrides. A timeframe present here uses EXACTLY its list
+    # (the global `patterns` is ignored for that TF); any TF not listed falls back to
+    # `patterns`. Lets a pattern be active on one TF and off on another — pattern edge
+    # is timeframe-specific (e.g. hammer is strong on 1d but toxic on 4h, see
+    # memory/finding_oos_regime_check). Empty dict = global list everywhere.
+    patterns_by_timeframe: dict[str, list[str]] = field(default_factory=dict)
+
+    def patterns_for(self, timeframe: str) -> list[str]:
+        """Effective pattern list for a timeframe — the per-TF override if one exists,
+        otherwise the global `patterns` list."""
+        return self.patterns_by_timeframe.get(timeframe, self.patterns)
 
 
 @dataclass

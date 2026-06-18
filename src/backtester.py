@@ -135,6 +135,9 @@ def _check_outcome_rolling(
     max_bars: int,
     atr: float | None = None,
     dense_grid: float = 0.0,
+    chandelier: float = 0.0,
+    breakeven_r: float = 0.0,
+    tp_buffer_atr: float = 0.0,
 ) -> tuple[str, float, str]:
     """Cascade through TP levels. When each level is hit, SL advances to lock in profit.
 
@@ -146,46 +149,100 @@ def _check_outcome_rolling(
     When `dense_grid` > 0, intermediate rungs `dense_grid`*ATR apart are inserted
     between entry and the final TP (dense-grid-no-lag experiment) so the tight trail
     ratchets during runs that fall short of the next structural level.
+
+    When `chandelier` > 0, a CONTINUOUS trail is layered on the structural ladder:
+    once the SL has left its initial spot (break-even reached), every bar the stop is
+    ratcheted to max(structural rung, running_peak - chandelier*ATR). This fixes the
+    "frozen between sparse structural levels" gap — the stop reacts each bar instead of
+    only when the next Fib/MA level is tagged.
+
+    When `breakeven_r` > 0, the break-even arm is DELAYED: the original protective SL is
+    held until running MFE reaches `breakeven_r` * initial_risk, regardless of which TP
+    rungs have been tagged. This targets the exit-capture root cause — the first ladder
+    rung often sits <0.5R above entry, so a sub-1R tag snaps SL to entry and normal noise
+    scratches the trade at 0R while the move continues (see
+    memory/finding_exit_capture_problem.md). The cost is that sub-`breakeven_r` reversals
+    that would have scratched at 0R become full -1R losses; the head-to-head quantifies
+    the trade-off. breakeven_r=0 (default) = legacy "arm on first rung touch".
+
+    When `tp_buffer_atr` > 0, the FINAL ladder level (where the live resting maker LIMIT
+    sits) is pulled `tp_buffer_atr`*ATR back toward entry for both the fill check and the
+    exit price, so a near-miss that stops just short of the exact level still fills. This
+    is the TP-side mirror of SL_BUFFER_ATR and also narrows the backtest-vs-live optimism
+    gap (backtest counts a one-tick wick to the exact level as a fill; live needs price to
+    trade through the resting order). Intermediate rungs are NOT shaved — they are only
+    SL-ratchet triggers, not resting orders.
     """
     if dense_grid > 0:
         tp_candidates = _densify_ladder(tp_candidates, entry, action, atr, dense_grid)
     if not tp_candidates:
         return "OPEN", 0.0, "open"
 
+    if chandelier > 0:
+        from src.position_manager import _atr
+
     initial_risk = abs(entry - sl)
     if initial_risk == 0:
         return "OPEN", 0.0, "open"
 
+    is_long = action == "BUY"
     current_sl = sl
+    final_idx = len(tp_candidates) - 1
+    tp_buf = tp_buffer_atr * atr if (tp_buffer_atr > 0 and atr) else 0.0
     sl_moved = False
     tp_idx = 0
+    peak = entry  # running high (long) / low (short) since entry, for the chandelier
     end = min(signal_idx + 1 + max_bars, len(df))
 
     for bar_i in range(signal_idx + 1, end):
         hi = float(df["high"].iloc[bar_i])
         lo = float(df["low"].iloc[bar_i])
+
+        # Running MFE peak (updated each bar before any SL move; only feeds future-bar
+        # decisions, so the conservative SL-first check below still uses the prior stop).
+        peak = max(peak, hi) if is_long else min(peak, lo)
+        mfe = (peak - entry) if is_long else (entry - peak)
+        # Break-even arm is gated on MFE when breakeven_r > 0 (delayed-arm experiment).
+        armed = breakeven_r <= 0 or mfe >= breakeven_r * initial_risk
+
         current_tp = tp_candidates[tp_idx][0]
+        # The resting maker LIMIT sits at the FINAL ladder level; shave its fill price
+        # tp_buf inside so a near-miss still fills. Intermediate rungs are unshaved.
+        if tp_idx == final_idx and tp_buf:
+            exit_tp = current_tp - tp_buf if is_long else current_tp + tp_buf
+        else:
+            exit_tp = current_tp
 
         # Check SL first (conservative — avoids over-optimistic results on wide candles)
-        sl_hit = (lo <= current_sl) if action == "BUY" else (hi >= current_sl)
-        tp_hit = (hi >= current_tp) if action == "BUY" else (lo <= current_tp)
+        sl_hit = (lo <= current_sl) if is_long else (hi >= current_sl)
+        tp_hit = (hi >= exit_tp) if is_long else (lo <= exit_tp)
 
         if sl_hit:
-            pnl_r = (current_sl - entry) / initial_risk if action == "BUY" else (entry - current_sl) / initial_risk
+            pnl_r = (current_sl - entry) / initial_risk if is_long else (entry - current_sl) / initial_risk
             return ("WIN" if pnl_r > 0 else "LOSS"), pnl_r, "stop"
 
         if tp_hit:
-            prev_tp = current_tp
-            tp_idx += 1
-
-            # No next level — exit at this TP (maker LIMIT fill live)
-            if tp_idx >= len(tp_candidates):
-                pnl_r = (prev_tp - entry) / initial_risk if action == "BUY" else (entry - prev_tp) / initial_risk
+            # Final ladder level — exit at the (possibly shaved) resting maker LIMIT.
+            if tp_idx == final_idx:
+                pnl_r = (exit_tp - entry) / initial_risk if is_long else (entry - exit_tp) / initial_risk
                 return "WIN", pnl_r, "tp"
 
-            # Advance SL: entry on first hit, previous TP price on subsequent hits
-            current_sl = entry if not sl_moved else prev_tp
-            sl_moved = True
+            # Advance SL: entry on first hit, previous TP price on subsequent hits —
+            # but only once the break-even arm is allowed (immediately when breakeven_r=0).
+            prev_tp = current_tp
+            tp_idx += 1
+            if armed:
+                current_sl = entry if not sl_moved else prev_tp
+                sl_moved = True
+
+        # Continuous chandelier trail (end-of-bar, no intra-bar lookahead). Only active
+        # after break-even has armed, so it composes with the delayed-arm gate above.
+        if chandelier > 0 and sl_moved:
+            atr_now = _atr(df.iloc[: bar_i + 1])
+            if atr_now is not None:
+                chand = (peak - chandelier * atr_now) if is_long else (peak + chandelier * atr_now)
+                if (is_long and chand > current_sl) or (not is_long and chand < current_sl):
+                    current_sl = chand
 
     # Timed out
     if not sl_moved:
@@ -275,16 +332,22 @@ def run_backtest(
     htf: bool = False,
     gate: bool = False,
     dense_grid: float = 0.0,
+    chandelier: float = 0.0,
+    breakeven_r: float = 0.0,
+    tp_buffer_atr: float = 0.0,
 ) -> tuple[list[TradeResult], dict[str, tuple[str, str]]]:
     exchange = create_exchange(config.exchange)
     results: list[TradeResult] = []
     date_ranges: dict[str, tuple[str, str]] = {}
     n_candles = candles if candles is not None else DEFAULT_BACKTEST_CANDLES
     tfs = timeframes if timeframes else config.timeframes
-    active_patterns = patterns if patterns else config.patterns
+    # Explicit `patterns=` (CLI --patterns / scripts) overrides everything and applies
+    # to all TFs; otherwise each TF uses its per-TF list (config.patterns_for) below.
+    pattern_override = patterns if patterns else None
 
     for tf in tfs:
         max_bars = MAX_BARS_FORWARD.get(tf, 20)
+        active_patterns = pattern_override or config.patterns_for(tf)
         tf_start: str | None = None
         tf_end: str | None = None
 
@@ -353,7 +416,8 @@ def run_backtest(
                             df, i,
                             ts.action, ts.entry, ts.stop_loss,
                             ts.all_tp_candidates, max_bars,
-                            atr=p.atr, dense_grid=dense_grid,
+                            atr=p.atr, dense_grid=dense_grid, chandelier=chandelier,
+                            breakeven_r=breakeven_r, tp_buffer_atr=tp_buffer_atr,
                         )
                     results.append(TradeResult(
                         symbol=symbol,

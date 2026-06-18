@@ -34,4 +34,5 @@ def load_config(config_path: str | None = None) -> AppConfig:
         candles_to_fetch=cfg.get("candles_to_fetch", 50),
         state_ttl_hours=cfg.get("state_ttl_hours", 48),
         min_atr_pct=cfg.get("min_atr_pct") or {},
+        patterns_by_timeframe=cfg.get("patterns_by_timeframe") or {},
     )

@@ -57,19 +57,37 @@ scripts/position_audit.py — read-only cross-check: position_state.json vs Bina
 
 ## Active patterns (config.yaml)
 
+Patterns are configured **per timeframe**. The global `patterns:` list is the default
+for any TF not overridden; `patterns_by_timeframe:` gives an exact list for a TF (it
+replaces, not extends, the global list for that TF). `AppConfig.patterns_for(tf)` resolves
+the effective list; an explicit backtest `--patterns` override still applies to all TFs.
+Pattern edge is timeframe-specific, so the same pattern can be on for one TF and off for
+another.
+
 ```yaml
-patterns:
+patterns:                 # default for 15m, 1h (and any TF not overridden)
   - bullish_engulfing
   - bearish_engulfing
   - doji
   - evening_star
   - shooting_star
+patterns_by_timeframe:
+  4h: [ …global 5…, morning_star ]
+  1d: [ …global 5…, hammer, morning_star ]
 ```
 
-Disabled after backtesting on 4h data:
-- `hammer` — negative expectancy (-0.20R)
-- `inverted_hammer` — near-zero expectancy (-0.01R)
-- `morning_star` — too rare, marginal (+0.02R)
+**Per-TF enablement (set 2026-06-18 from a long-window OOS sweep — 5000 candles,
+1d≈8.3yr / 4h≈2.3yr; see `memory/finding_oos_regime_check.md`):**
+- `hammer` — **enabled on 1d only** (+0.32/+0.15R both halves over 8yr); TOXIC on 4h
+  (+0.06/−0.38R) so it stays off there. The old blanket disable judged it on a short 4h
+  window and wrongly applied it everywhere.
+- `morning_star` — **enabled on 1d and 4h** (positive both halves on both: 1d +0.18/+0.21,
+  4h +0.04/+0.28). Was a false-negative ("too rare").
+- `inverted_hammer` — **still disabled everywhere** (flips sign / marginal, no robust edge).
+
+Earlier note (now superseded): these three were disabled "after backtesting on 4h data"
+(hammer −0.20R, inverted_hammer −0.01R, morning_star +0.02R) — that read was a short-window
+4h artifact applied globally. The long-window per-TF sweep corrected it.
 
 ## Symbols and timeframes
 

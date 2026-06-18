@@ -64,7 +64,7 @@ def _collect_signals(
                 logger.error("Failed to fetch data for %s %s", symbol, tf)
                 continue
             htf_levels = _build_htf_levels(tf, symbol_data)
-            patterns = detect_patterns(symbol_data[tf], symbol, tf, config.patterns, htf_levels, config.min_atr_pct.get(tf))
+            patterns = detect_patterns(symbol_data[tf], symbol, tf, config.patterns_for(tf), htf_levels, config.min_atr_pct.get(tf))
             for p in patterns:
                 all_directions.setdefault(symbol, {}).setdefault(tf, set()).add(p.signal)
                 if p.trading_signal is None or p.trading_signal.risk_reward < MIN_RR:
@@ -313,7 +313,7 @@ def _status(config: AppConfig) -> None:
             if tf not in symbol_data:
                 continue
             htf_levels = _build_htf_levels(tf, symbol_data)
-            detected = detect_patterns(symbol_data[tf], symbol, tf, config.patterns, htf_levels, config.min_atr_pct.get(tf))
+            detected = detect_patterns(symbol_data[tf], symbol, tf, config.patterns_for(tf), htf_levels, config.min_atr_pct.get(tf))
             all_detected.extend(detected)
 
     # Open positions without a matching current signal
@@ -374,7 +374,7 @@ def _dry_run(config: AppConfig) -> None:
             if tf not in symbol_data:
                 continue
             htf_levels = _build_htf_levels(tf, symbol_data)
-            detected = detect_patterns(symbol_data[tf], symbol, tf, config.patterns, htf_levels, config.min_atr_pct.get(tf))
+            detected = detect_patterns(symbol_data[tf], symbol, tf, config.patterns_for(tf), htf_levels, config.min_atr_pct.get(tf))
             all_detected.extend(detected)
 
     if not all_detected:
@@ -512,6 +512,12 @@ def main() -> None:
              "(the live exit model always gates)",
     )
     parser.add_argument(
+        "--body-anchors",
+        action="store_true",
+        help="Experimental: anchor the Fibonacci windows to candle body boundaries "
+             "(max(open,close)/min(open,close)) instead of wick extremes (high/low)",
+    )
+    parser.add_argument(
         "--dense-grid",
         type=float,
         default=0.0,
@@ -520,6 +526,16 @@ def main() -> None:
              "ATR apart between entry and the final TP (e.g. 0.5). Tight trail, no lag — "
              "tests whether finer rungs lock more profit on runs that fall short of the "
              "next structural level. 0 = off (default).",
+    )
+    parser.add_argument(
+        "--chandelier",
+        type=float,
+        default=0.0,
+        metavar="ATR_MULT",
+        help="EXPERIMENT (rolling model): once break-even is reached, layer a CONTINUOUS "
+             "ATR chandelier (running_peak - MULT*ATR) on the structural ladder, ratcheted "
+             "every bar. Decouples the trail from sparse structural levels so the stop "
+             "reacts between Fib/MA rungs (e.g. 3.0). 0 = off (default).",
     )
     args = parser.parse_args()
 
@@ -659,7 +675,11 @@ def main() -> None:
             # Round-trip taker = fee_rt; the take-profit leg is maker unless --no-maker-tp.
             fees = Fees(taker_side=fee_rt / 2, maker_tp=not args.no_maker_tp)
         print("Fetching historical data and running backtest...")
-        results, date_ranges = run_backtest(config, timeframes=args.timeframes, candles=args.candles, patterns=args.patterns, exit_model=args.exit_model, htf=args.htf, gate=args.gate, dense_grid=args.dense_grid)
+        if args.body_anchors:
+            import src.pattern_detector as _pd
+            _pd.USE_BODY_ANCHORS = True
+            print("  [body-anchors] Fib windows anchored to candle bodies, not wicks")
+        results, date_ranges = run_backtest(config, timeframes=args.timeframes, candles=args.candles, patterns=args.patterns, exit_model=args.exit_model, htf=args.htf, gate=args.gate, dense_grid=args.dense_grid, chandelier=args.chandelier)
         print_backtest_results(results, risk=args.risk, date_ranges=date_ranges, fees=fees)
         if args.risk_pct is not None:
             simulate_pct_wallet(results, args.wallet, args.risk_pct, fees=fees)

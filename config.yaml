@@ -25,6 +25,33 @@ patterns:
   - evening_star
   - shooting_star
 
+# Per-timeframe pattern overrides. A timeframe listed here uses EXACTLY its list and
+# ignores the global `patterns` above; any TF not listed (15m, 1h) falls back to it.
+# Pattern edge is timeframe-specific, so a pattern can be on for one TF and off for
+# another. Set from a long-window OOS sweep (5000 candles, 1d=8.3yr / 4h=2.3yr; see
+# memory/finding_oos_regime_check) on 2026-06-18:
+#   - hammer: STRONG on 1d (+0.32/+0.15R both halves over 8yr) but TOXIC on 4h
+#     (+0.06/-0.38R) — enable 1d only. The old blanket disable judged it on 4h.
+#   - morning_star: positive both halves on 1d (+0.18/+0.21) AND 4h (+0.04/+0.28) —
+#     was a false-negative ("too rare"); enable on both.
+#   - inverted_hammer: stays off everywhere (flips/marginal, no robust edge).
+patterns_by_timeframe:
+  4h:
+    - bullish_engulfing
+    - bearish_engulfing
+    - doji
+    - evening_star
+    - shooting_star
+    - morning_star
+  1d:
+    - bullish_engulfing
+    - bearish_engulfing
+    - doji
+    - evening_star
+    - shooting_star
+    - hammer
+    - morning_star
+
 candles_to_fetch: 210
 state_file: alert_state.json
 state_ttl_hours: 48

@@ -17,6 +17,21 @@ _LONG_LEGGED_PERIODS = 20     # lookback for avg range in Long-Legged classifica
 _SMALL_BODY_THRESHOLD = 0.15
 _SHADOW_RATIO = 2.0
 
+# Experimental toggle: anchor the Fibonacci windows (Fib50/Fib200, own-TF and HTF)
+# to candle BODY boundaries — max(open, close) / min(open, close) — instead of the
+# wick extremes (high/low). Set by the --body-anchors backtest flag. ATR and pattern
+# shadow logic are intentionally unaffected; only the swing top/bottom anchors move.
+USE_BODY_ANCHORS = False
+
+
+def _window_extremes(w: pd.DataFrame) -> tuple[float, float]:
+    """Top/bottom anchors for a window: wick extremes, or body bounds if toggled."""
+    if USE_BODY_ANCHORS:
+        hi = float(np.maximum(w["open"], w["close"]).max())
+        lo = float(np.minimum(w["open"], w["close"]).min())
+        return hi, lo
+    return float(w["high"].max()), float(w["low"].min())
+
 DISPLAY_NAMES = {
     "hammer": "Hammer",
     "inverted_hammer": "Inverted Hammer",
@@ -297,11 +312,11 @@ def _compute_context(
         ma_position = None
 
     w50 = df.iloc[max(0, target - 49):target + 1]
-    h50, l50 = float(w50["high"].max()), float(w50["low"].min())
+    h50, l50 = _window_extremes(w50)
     fib50 = _fib_bounds(h50, l50, close)
 
     w200 = df.iloc[max(0, target - 199):target + 1]
-    h200, l200 = float(w200["high"].max()), float(w200["low"].min())
+    h200, l200 = _window_extremes(w200)
     fib200 = _fib_bounds(h200, l200, close)
 
     atr, atr_range_high, atr_range_low = _compute_atr(df, target)
@@ -346,7 +361,7 @@ def extract_htf_levels(df: pd.DataFrame, timeframe: str) -> list[tuple[float, st
             levels.append((float(raw), f"{timeframe} MA{period}"))
 
     w50 = df.iloc[max(0, target - 49):target + 1]
-    h50, l50 = float(w50["high"].max()), float(w50["low"].min())
+    h50, l50 = _window_extremes(w50)
     r = h50 - l50
     if r > 0:
         for frac, lbl in _FIB_LEVELS:
