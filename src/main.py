@@ -279,22 +279,16 @@ def _manage_positions_only(config: AppConfig) -> None:
         return
 
     trading_exchange = create_exchange(config.exchange, api_key, api_secret, testnet=False, market_type="future")
+    # Markets must be loaded before any trail: position_manager._replace_orders calls
+    # price_to_precision/amount_to_precision, which need market metadata. Without this the
+    # standalone */5 manager raised "markets not loaded" and never trailed (only the
+    # scan+trade runs, which load markets, advanced the ladder).
+    trading_exchange.load_markets()
     position_manager = PositionManager(trading_exchange, position_tracker, alerter=alerter)
 
-    # Fetch data only for symbols/timeframes that are actually needed
-    scan_exchange = create_exchange(config.exchange)
-    data_cache: dict = {}
-    for symbol, pos in positions.items():
-        if pos.sl <= 0:
-            continue
-        tf = pos.signal_timeframe
-        data_cache.setdefault(symbol, {})
-        try:
-            data_cache[symbol][tf] = fetch_ohlcv(scan_exchange, symbol, tf, limit=50)
-        except Exception:
-            logger.warning("Could not fetch %s %s for position management", symbol, tf)
-
-    position_manager.run(data_cache)
+    # The manager fetches its own candles from the futures exchange (the venue the
+    # positions trade on), so no spot pre-fetch is needed here.
+    position_manager.run()
     logger.info("Position management complete — %d position(s) checked.", len(positions))
 
 
@@ -732,7 +726,7 @@ def main() -> None:
     if fetch_errors:
         _send_fetch_error_alert(alerter, fetch_errors)
     if position_manager is not None:
-        position_manager.run(data_cache)
+        position_manager.run()
 
     # Phase 1: collect all valid signals across all timeframes
     # Phase 2: resolve conflicts — per symbol, only the highest-TF signal is kept

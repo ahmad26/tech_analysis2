@@ -172,6 +172,24 @@ class Trader:
             logger.warning("Quantity too small for %s (%.8f)", p.symbol, raw_qty)
             return False
 
+        # Min-notional guard: Binance USDT-M rejects orders whose notional (qty*entry) is
+        # below the market minimum (error -4164, "notional must be no smaller than 20").
+        # Risk-based sizing on a wide stop (e.g. a 1d signal) can clear the min-amount
+        # check above yet still fall under this floor. Sizing up would breach the risk
+        # cap, so skip cleanly rather than let the exchange reject the market entry every
+        # scan (which otherwise logs a 400 traceback and never opens the position).
+        try:
+            min_notional = self.exchange.market(p.symbol)["limits"]["cost"]["min"] or 20.0
+        except Exception:
+            min_notional = 20.0
+        notional = quantity * ts.entry
+        if notional < min_notional:
+            logger.warning(
+                "Notional %.2f below exchange minimum %.2f for %s (qty=%.8f) — skipping",
+                notional, min_notional, p.symbol, quantity,
+            )
+            return False
+
         is_long = ts.action == "BUY"
         entry_side = "buy" if is_long else "sell"
         exit_side  = "sell" if is_long else "buy"

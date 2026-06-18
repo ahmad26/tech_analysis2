@@ -6,6 +6,7 @@ import ccxt
 import numpy as np
 import pandas as pd
 
+from src.data_fetcher import fetch_ohlcv
 from src.position_tracker import PositionTracker, TrackedPosition
 from src.trader import is_protective_order, place_take_profit
 
@@ -70,10 +71,24 @@ class PositionManager:
         self.tracker = position_tracker
         self.alerter = alerter
 
-    def run(self, data_cache: dict) -> None:
+    def _fetch_candles(self, symbol: str, timeframe: str) -> pd.DataFrame | None:
+        """Candles for trailing/exit decisions, fetched from self.exchange — the
+        futures venue the positions actually trade on. The scanner detects signals
+        on spot data, but ladder touches and SL/TP-hit checks must be evaluated on
+        the prices that fill the resting orders; spot/futures basis (~0.05-0.1%)
+        otherwise causes near-boundary rungs to be missed (or hit) on the wrong
+        feed. On fetch failure return None so the caller skips the trail this
+        cycle rather than acting on stale data."""
+        try:
+            return fetch_ohlcv(self.exchange, symbol, timeframe, limit=50)
+        except Exception:
+            logger.warning("Could not fetch %s %s (futures) for position management", symbol, timeframe)
+            return None
+
+    def run(self) -> None:
         """Trail stops and check SL/TP for all open positions. Called once per scan cycle."""
         for symbol, pos in list(self.tracker.all().items()):
-            df = data_cache.get(symbol, {}).get(pos.signal_timeframe)
+            df = self._fetch_candles(symbol, pos.signal_timeframe)
             if df is None or df.empty:
                 logger.warning("No candle data for %s %s — skipping position update", symbol, pos.signal_timeframe)
                 continue
