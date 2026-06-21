@@ -145,14 +145,15 @@ def test_replace_failed_leaves_old_orders_intact():
     assert ex.algo_cancelled == []
 
 
-def test_replace_placed_cancels_old_but_not_new():
+def test_replace_unchanged_tp_keeps_resting_tp_cancels_old_sl():
     ex = FakeExchange(sl_behavior="ok")
-    # Both the OLD protective orders and (after placement) the NEW ones are
-    # visible to the cancel sweep; only the OLD ones must be cancelled.
-    ex.open_orders = [
-        {"id": "OLD_TP", "type": "LIMIT", "reduceOnly": True},
-        {"id": "NEW_TP", "type": "LIMIT", "reduceOnly": True},
-    ]
+    # new_tp (1.05) == pos.tp (1.05): the resting maker LIMIT TP is already correct.
+    # The maker TP is a reduceOnly LIMIT whose qty Binance counts against the
+    # position's reducible size the moment it rests, so re-placing a second
+    # full-size reduceOnly LIMIT is rejected (-2022). The fix leaves the resting TP
+    # untouched and only cancels the superseded SL (the just-placed SL algoId A_NEW
+    # is preserved).
+    ex.open_orders = [{"id": "RESTING_TP", "type": "LIMIT", "reduceOnly": True}]
     ex.algo_orders = [
         {"symbol": "DOTUSDT", "algoId": "OLD_SL"},
         {"symbol": "DOTUSDT", "algoId": "A_NEW"},
@@ -162,34 +163,49 @@ def test_replace_placed_cancels_old_but_not_new():
     status = mgr._replace_orders(_pos(), 1.029, 1.05, None)
 
     assert status == "placed"
-    assert ex.cancelled == ["OLD_TP"]          # new TP preserved
-    assert ex.algo_cancelled == ["OLD_SL"]     # new SL algo preserved
+    assert ex.cancelled == []                  # resting TP kept (target unchanged)
+    assert ex.algo_cancelled == ["OLD_SL"]     # superseded SL cancelled, new SL kept
 
 
-# ---- TP leg: a failed TP re-place must not orphan the resting TP --------- #
-# Regression for the SOL/USDT incident (2026-06-16): a transient TP placement
-# error during a ladder ratchet cancelled the old TP and left the position with
-# a stop but no target. The fix excludes the resting TP from the cancel sweep.
+def test_replace_changed_tp_cancels_old_tp_then_places_new():
+    ex = FakeExchange(sl_behavior="ok")
+    ex.open_orders = [{"id": "OLD_TP", "type": "LIMIT", "reduceOnly": True}]
+    ex.algo_orders = [{"symbol": "DOTUSDT", "algoId": "OLD_SL"}]
+    mgr = PositionManager(ex, FakeTracker(_pos()))
 
-def test_replace_tp_failure_preserves_old_tp():
+    # new_tp (1.06) != pos.tp (1.05): two full-size reduceOnly LIMITs can't coexist,
+    # so the old TP must be cancelled BEFORE the new one is placed (place-before-
+    # cancel is impossible for a LIMIT TP). The SL stays protected throughout.
+    status = mgr._replace_orders(_pos(), 1.029, 1.06, None)
+
+    assert status == "placed"
+    assert "OLD_TP" in ex.cancelled            # superseded TP cancelled to free reducible qty
+    assert ex.algo_cancelled == ["OLD_SL"]     # superseded SL cancelled too
+
+
+# ---- TP leg: a CHANGED target swaps the LIMIT TP cancel-then-place -------- #
+# The maker LIMIT TP can't use place-before-cancel (a second full-size reduceOnly
+# LIMIT is rejected -2022), so a changed target cancels the old TP first. If the
+# re-place then fails the position keeps its (freshly placed) SL and is briefly
+# TP-less — recovered next run, when the tracker's tp matches no resting order.
+
+def test_replace_changed_tp_failure_keeps_sl():
     ex = FakeExchange(sl_behavior="ok", tp_behavior="error")
     ex.open_orders = [{"id": "OLD_TP", "type": "LIMIT", "reduceOnly": True}]
     ex.algo_orders = [{"symbol": "DOTUSDT", "algoId": "OLD_SL"}]
     mgr = PositionManager(ex, FakeTracker(_pos()))
 
-    status = mgr._replace_orders(_pos(), 1.029, 1.05, None)
+    status = mgr._replace_orders(_pos(), 1.029, 1.06, None)
 
-    # The SL leg still placed, so the ratchet is allowed to advance...
+    # The SL leg still placed, so the ratchet is allowed to advance.
     assert status == "placed"
-    # ...the superseded OLD stop is cancelled...
     assert ex.algo_cancelled == ["OLD_SL"]
-    # ...but the failed TP re-place must leave the resting TP untouched.
-    assert ex.cancelled == []
+    assert "OLD_TP" in ex.cancelled            # old LIMIT TP cancelled before the failed re-place
 
 
-def test_replace_tp_failure_preserves_algo_tp():
-    # Same protection when the resting TP is a TAKE_PROFIT_MARKET algo order
-    # rather than the maker LIMIT.
+def test_replace_changed_tp_failure_cancels_algo_tp():
+    # Same, but the resting TP is a TAKE_PROFIT_MARKET algo order rather than the
+    # maker LIMIT: a changed target cancels it first across the algo endpoint.
     ex = FakeExchange(sl_behavior="ok", tp_behavior="error")
     ex.algo_orders = [
         {"symbol": "DOTUSDT", "algoId": "OLD_SL", "orderType": "STOP_MARKET", "reduceOnly": "true"},
@@ -197,11 +213,12 @@ def test_replace_tp_failure_preserves_algo_tp():
     ]
     mgr = PositionManager(ex, FakeTracker(_pos()))
 
-    status = mgr._replace_orders(_pos(), 1.029, 1.05, None)
+    status = mgr._replace_orders(_pos(), 1.029, 1.06, None)
 
     assert status == "placed"
-    # OLD stop cancelled, OLD take-profit preserved.
-    assert ex.algo_cancelled == ["OLD_SL"]
+    # Both the superseded stop and the old algo take-profit are cancelled.
+    assert "OLD_SL" in ex.algo_cancelled
+    assert "OLD_TP" in ex.algo_cancelled
 
 
 # ---- step 2: _trail_ladder reacts to the outcome ------------------------- #

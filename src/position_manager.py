@@ -396,20 +396,38 @@ class PositionManager:
                 return "failed"
 
         if new_tp > 0:
-            try:
-                tp_price = float(self.exchange.price_to_precision(pos.symbol, new_tp))
-                tp_order = place_take_profit(self.exchange, pos.symbol, exit_side, pos.contracts, tp_price)
-                new_ids |= _order_ids(tp_order)
-            except Exception:
-                logger.exception(
-                    "Failed to place updated TP for %s at %.4f — preserving existing TP",
-                    pos.symbol, new_tp,
-                )
-                # The new TP did not place. Exclude the take-profit already
-                # resting from the cancel sweep below, so a transient failure
-                # can't orphan it and leave the position with a stop but no
-                # target — the TP twin of the 2026-06-15 naked-SL fix.
-                new_ids |= self._resting_tp_ids(pos.symbol)
+            tp_price = float(self.exchange.price_to_precision(pos.symbol, new_tp))
+            resting_tp = self._resting_tp_ids(pos.symbol)
+            cur_tp = (float(self.exchange.price_to_precision(pos.symbol, pos.tp))
+                      if pos.tp > 0 else 0.0)
+            if resting_tp and tp_price == cur_tp:
+                # Target unchanged and already resting — leave it. The maker TP is a
+                # reduceOnly LIMIT, whose quantity Binance counts against the
+                # position's reducible size the moment it rests (unlike STOP_MARKET,
+                # which only counts once triggered). Placing a SECOND full-size
+                # reduceOnly LIMIT at the same level is therefore rejected (-2022,
+                # "ReduceOnly Order is rejected") — the recurring failure seen on
+                # every ladder ratchet, which re-passes the unchanged pos.tp. Just
+                # keep the resting order and exclude it from the cancel sweep below.
+                new_ids |= resting_tp
+            else:
+                # Target moved (or the TP went missing, e.g. after _close cancelled
+                # it): cancel the resting LIMIT TP BEFORE placing the new one — two
+                # full-size reduceOnly LIMITs can't coexist (-2022), so the SL's
+                # place-before-cancel trick is impossible for the LIMIT TP. The SL
+                # placed above keeps the position protected during the brief swap; a
+                # failed re-place leaves only the TP missing, recovered next run
+                # (the tracker's tp then matches no resting order, so this branch
+                # runs again instead of the skip above).
+                self._cancel_resting_tp(pos.symbol)
+                try:
+                    tp_order = place_take_profit(self.exchange, pos.symbol, exit_side, pos.contracts, tp_price)
+                    new_ids |= _order_ids(tp_order)
+                except Exception:
+                    logger.exception(
+                        "Failed to place updated TP for %s at %.4f — position keeps its SL, "
+                        "TP retried next run", pos.symbol, new_tp,
+                    )
 
         # New orders are resting — now cancel the superseded ones (never the new).
         try:
@@ -441,6 +459,38 @@ class PositionManager:
         except Exception:
             logger.warning("Could not fetch algo orders for %s while preserving TP", symbol)
         return ids
+
+    def _cancel_resting_tp(self, symbol: str) -> None:
+        """Cancel only the resting take-profit order(s) for `symbol` (the maker
+        reduceOnly LIMIT, or an algo TAKE_PROFIT_MARKET if MAKER_TP is off),
+        leaving the stop-loss untouched. Required before re-placing the maker
+        LIMIT TP at a NEW level: a resting reduceOnly LIMIT counts against the
+        position's reducible size, so a second full-size reduceOnly LIMIT is
+        rejected (-2022). The SL keeps protecting the position throughout."""
+        try:
+            for order in self.exchange.fetch_open_orders(symbol):
+                if not is_protective_order(order) or _is_stop_order(order):
+                    continue
+                try:
+                    self.exchange.cancel_order(order["id"], symbol)
+                except Exception:
+                    logger.warning("Could not cancel TP order %s for %s", order.get("id"), symbol)
+        except Exception:
+            logger.warning("Could not fetch regular orders for %s while cancelling TP", symbol)
+
+        try:
+            raw_symbol = self.exchange.market_id(symbol)
+            for o in self.exchange.fapiPrivateGetOpenAlgoOrders({}):
+                if o.get("symbol") != raw_symbol or _is_stop_order(o):
+                    continue
+                if str(o.get("reduceOnly")).lower() != "true":
+                    continue
+                try:
+                    self.exchange.fapiPrivateDeleteAlgoOrder({"algoId": o["algoId"]})
+                except Exception:
+                    logger.warning("Could not cancel TP algo order %s for %s", o.get("algoId"), symbol)
+        except Exception:
+            logger.warning("Could not fetch algo orders for %s while cancelling TP", symbol)
 
     def _cancel_conditional(self, symbol: str, exclude_ids: set[str] | None = None) -> None:
         exclude_ids = exclude_ids or set()
