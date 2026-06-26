@@ -39,6 +39,28 @@ def _fetch_realized_pnl(exchange, position) -> float:
         return 0.0
 
 
+def _fetch_trade_costs(exchange, position) -> tuple[float, float]:
+    """Commission + funding for a closed position's window (both negative). Used to
+    log net R per closed trade; best-effort, returns (0, 0) on failure."""
+    try:
+        market_id = exchange.market_id(position.symbol)
+        start_time = max(0, position.opened_at_ms - 1000)
+        comm = fund = 0.0
+        for it, dest in (("COMMISSION", "comm"), ("FUNDING_FEE", "fund")):
+            rows = exchange.fapiPrivateGetIncome({
+                "incomeType": it, "symbol": market_id, "startTime": start_time, "limit": 1000,
+            })
+            total = sum(float(r["income"]) for r in rows)
+            if dest == "comm":
+                comm = total
+            else:
+                fund = total
+        return comm, fund
+    except Exception:
+        logger.warning("Could not fetch trade costs for %s", position.symbol, exc_info=True)
+        return 0.0, 0.0
+
+
 TF_PRIORITY: dict[str, int] = {"15m": 1, "1h": 2, "4h": 3, "1d": 4}
 
 
@@ -764,6 +786,10 @@ def main() -> None:
             for pos in closed:
                 trader.cancel_conditional_orders(pos.symbol)
                 pnl = _fetch_realized_pnl(trading_exchange, pos)
+                commission, funding = _fetch_trade_costs(trading_exchange, pos)
+                position_tracker.log_closed_trade(
+                    pos, realized_pnl=pnl, commission=commission, funding=funding,
+                )
                 alerter.send_position_closed(pos.symbol, pos.side, pos.contracts, pos.entry_price, pnl)
         except Exception:
             logger.exception("Failed to check position changes")

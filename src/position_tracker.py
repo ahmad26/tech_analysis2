@@ -142,3 +142,54 @@ class PositionTracker:
     def remove(self, symbol: str) -> None:
         self._state.pop(symbol, None)
         self._save()
+
+    def log_closed_trade(
+        self,
+        pos: "TrackedPosition",
+        *,
+        realized_pnl: float,
+        commission: float = 0.0,
+        funding: float = 0.0,
+        closed_at_ms: int | None = None,
+    ) -> None:
+        """Append one JSON line per closed position to closed_trades.jsonl.
+
+        The money ledger (Binance income) records P&L but not per-trade risk, so R
+        can't be reconstructed from it alone. Here we have the frozen entry SL, so we
+        persist `one_r_usdt` = |entry - initial_sl| x contracts alongside the realized
+        P&L, making net/gross R recoverable later (see scripts/realized_pnl.py --by-trade).
+        Best-effort: never raises into the close-handling path."""
+        try:
+            closed_at_ms = closed_at_ms if closed_at_ms is not None else int(time.time() * 1000)
+            one_r = (
+                abs(pos.entry_price - pos.initial_sl) * pos.contracts
+                if pos.entry_price and pos.initial_sl
+                else 0.0
+            )
+            net = realized_pnl + commission + funding
+            rec = {
+                "closed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(closed_at_ms / 1000)),
+                "closed_at_ms": closed_at_ms,
+                "opened_at_ms": pos.opened_at_ms,
+                "symbol": pos.symbol,
+                "side": pos.side,
+                "timeframe": pos.signal_timeframe,
+                "entry": pos.entry_price,
+                "initial_sl": pos.initial_sl,
+                "sl_at_close": pos.sl,
+                "tp": pos.tp,
+                "contracts": pos.contracts,
+                "one_r_usdt": round(one_r, 6),
+                "realized_pnl": round(realized_pnl, 6),
+                "commission": round(commission, 6),
+                "funding": round(funding, 6),
+                "net_pnl": round(net, 6),
+                "r_gross": round(realized_pnl / one_r, 4) if one_r else None,
+                "r_net": round(net / one_r, 4) if one_r else None,
+            }
+            log_path = self.path.with_name("closed_trades.jsonl")
+            with open(log_path, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except Exception:
+            logger.warning("Could not append closed trade for %s to closed_trades.jsonl",
+                           getattr(pos, "symbol", "?"), exc_info=True)

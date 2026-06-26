@@ -9,6 +9,7 @@ build/
 alert_state.json
 position_state.json
 position_state.lock
+closed_trades.jsonl
 risk_state.json
 *.log
 healthcheck_last_report.txt
