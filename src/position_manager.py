@@ -24,6 +24,19 @@ BREAKEVEN_TRIGGER_R = 1.0
 LOCK_1R_TRIGGER_R = 2.0
 BREAKEVEN_BUFFER_R = 0.1
 
+# Break-even floor for LADDER positions. The structural ladder only ratchets the
+# stop when price touches a rung, so a sparse ladder whose only rung is the final
+# TP (a 1d signal with no MA/HTF/Fib level between entry and the Fib target) never
+# moves its stop until the trade is essentially over — a large unrealised gain
+# stays fully exposed to the initial SL. This floor arms a break-even stop once
+# profit reaches BREAKEVEN_FLOOR_R x initial risk, independent of rung touches.
+# It coexists with the ladder trail (tighter stop wins, ratchet-only); for dense
+# ladders the first rung usually arms below +1R, so the floor is just a backstop.
+# 0 = off. NOTE: validate expectancy with `--breakeven-floor` in the backtester
+# before changing this (break-even arming can scratch winners — see
+# memory/finding_exit_capture_problem.md); kept at +1R as a risk-protection rule.
+BREAKEVEN_FLOOR_R = 1.0
+
 
 def _order_ids(order) -> set[str]:
     """All identifiers an exchange order may be referenced by. A STOP_MARKET
@@ -253,10 +266,26 @@ class PositionManager:
         else:
             extreme = float(since["low"].min())
             touched = [lv for lv in pos.tp_ladder if lv >= extreme]
-        if not touched:
+
+        candidates: list[float] = []
+        if touched:
+            candidates.append(pos.entry_price if len(touched) == 1 else touched[-1])
+
+        # Break-even floor, independent of rung touches (see BREAKEVEN_FLOOR_R).
+        # Arms once profit (measured from the favourable extreme since open)
+        # reaches BREAKEVEN_FLOOR_R x initial risk, pulling the stop to entry plus
+        # a fee buffer so a wick back to entry nets ~0 rather than a small loss.
+        if BREAKEVEN_FLOOR_R > 0 and pos.initial_sl > 0:
+            R = abs(pos.entry_price - pos.initial_sl)
+            mfe = (extreme - pos.entry_price) if pos.side == "long" else (pos.entry_price - extreme)
+            if R > 0 and mfe >= BREAKEVEN_FLOOR_R * R:
+                buf = BREAKEVEN_BUFFER_R * R
+                candidates.append(pos.entry_price + buf if pos.side == "long" else pos.entry_price - buf)
+
+        if not candidates:
             return
 
-        new_sl = pos.entry_price if len(touched) == 1 else touched[-1]
+        new_sl = max(candidates) if pos.side == "long" else min(candidates)
         ratchet = (pos.side == "long" and new_sl > pos.sl) or \
                   (pos.side == "short" and new_sl < pos.sl)
         if not ratchet:

@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BACKTEST_CANDLES = 1000
 
+# Fee buffer for the break-even floor (mirrors position_manager.BREAKEVEN_BUFFER_R):
+# the floor lands the stop at entry + this many R so it covers round-trip fees.
+BREAKEVEN_BUFFER_R = 0.1
+
 # Per-side fees as a fraction of notional (~incl. BNB discount). Market entry is
 # always taker; the stop-loss (STOP_MARKET) is taker; the maker take-profit (a resting
 # reduceOnly LIMIT, see memory/feature_maker_tp.md) is maker. Trailing the stop is free
@@ -138,6 +142,7 @@ def _check_outcome_rolling(
     chandelier: float = 0.0,
     breakeven_r: float = 0.0,
     tp_buffer_atr: float = 0.0,
+    breakeven_floor_r: float = 0.0,
 ) -> tuple[str, float, str]:
     """Cascade through TP levels. When each level is hit, SL advances to lock in profit.
 
@@ -244,6 +249,18 @@ def _check_outcome_rolling(
                 if (is_long and chand > current_sl) or (not is_long and chand < current_sl):
                     current_sl = chand
 
+        # Break-even FLOOR (end-of-bar, independent of rung tags) — mirrors the
+        # live position_manager floor. Once MFE reaches breakeven_floor_r x initial
+        # risk, guarantee the stop sits at entry + fee buffer even if no rung (or
+        # only the final TP rung) was tagged. Fixes sparse/single-rung ladders that
+        # would otherwise never arm a break-even. Ratchet-only; tighter wins.
+        if breakeven_floor_r > 0 and mfe >= breakeven_floor_r * initial_risk:
+            floor = (entry + BREAKEVEN_BUFFER_R * initial_risk) if is_long \
+                else (entry - BREAKEVEN_BUFFER_R * initial_risk)
+            if (is_long and floor > current_sl) or (not is_long and floor < current_sl):
+                current_sl = floor
+                sl_moved = True
+
     # Timed out
     if not sl_moved:
         return "OPEN", 0.0, "open"
@@ -335,6 +352,7 @@ def run_backtest(
     chandelier: float = 0.0,
     breakeven_r: float = 0.0,
     tp_buffer_atr: float = 0.0,
+    breakeven_floor_r: float = 0.0,
 ) -> tuple[list[TradeResult], dict[str, tuple[str, str]]]:
     exchange = create_exchange(config.exchange)
     results: list[TradeResult] = []
@@ -418,6 +436,7 @@ def run_backtest(
                             ts.all_tp_candidates, max_bars,
                             atr=p.atr, dense_grid=dense_grid, chandelier=chandelier,
                             breakeven_r=breakeven_r, tp_buffer_atr=tp_buffer_atr,
+                            breakeven_floor_r=breakeven_floor_r,
                         )
                     results.append(TradeResult(
                         symbol=symbol,

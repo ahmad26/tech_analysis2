@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from src.models import DetectedPattern, TradingSignal
 
 # Minimum acceptable reward-to-risk ratio.
@@ -15,6 +17,29 @@ MIN_RISK_PCT = 0.001  # 0.1%
 # a wick touching the level does not immediately trigger the stop.
 SL_BUFFER_ATR = 0.25
 
+# Round-number (psychological-level) awareness on the TAKE-PROFIT. EXPERIMENT,
+# default off; flip via --psych-round / module globals (like MAKER_TP). Order flow
+# clusters at round numbers, which act as S/R: a TP that sits just BEYOND a round
+# number (e.g. a Fib-extreme target at 6.996, just under 7) often never tags it —
+# price stalls at the number and reverses. So pull such a TP to just BEFORE the
+# number, where fills actually happen. Grid auto-scales with price magnitude:
+# 10^floor(log10 price) and its half-step (LINK ~7 -> 1.0 & 0.5; BTC ~68k -> 10000
+# & 5000). Distances are ATR-relative.
+#
+# NOTE: the mirror idea on the STOP (push it PAST the round number) was implemented
+# and backtested but REMOVED — it was net-negative on both 1d and 4h (the larger
+# loss when the level breaks outweighs the wick stop-outs it dodges; the stop
+# already has SL_BUFFER_ATR). Only the TP-pull survived. See the 2026-06-26 finding.
+# Per-TF: a 5000-candle (8.3yr 1d / 2.3yr 4h) OOS split on 2026-06-26 showed the
+# TP-pull is robustly positive on 1d in BOTH halves (+0.004/+0.012R, ~+19R aggregate)
+# but a tiny net drag on 4h (-0.003/-0.001R both halves). So it ships ON, gated to 1d.
+# PSYCH_ROUND_TFS = None means "all timeframes" (used by the --psych-round experiment
+# flag to sweep arbitrary TFs). See memory/finding_psych_round_tp.md.
+PSYCH_ROUND = True
+PSYCH_ROUND_TFS: set[str] | None = {"1d"}   # TFs the pull applies to (None = all)
+PSYCH_BAND_ATR = 0.5      # within this many ATR beyond a round number => adjust
+PSYCH_BUFFER_ATR = 0.1    # rest the adjusted TP this many ATR on the near side
+
 _FIB_FRACS = [0.0, 0.236, 0.382, 0.500, 0.618, 0.786, 1.0]
 _FIB_LABELS = ["0%", "23.6%", "38.2%", "50%", "61.8%", "78.6%", "100%"]
 
@@ -24,15 +49,49 @@ def _all_fib_levels(high: float, low: float, source: str) -> list[tuple[float, s
     return [(low + f * r, f"{source} {lbl}") for f, lbl in zip(_FIB_FRACS, _FIB_LABELS)]
 
 
+def _round_grid(price: float) -> tuple[float, float]:
+    """Psychological-level grid for a price's magnitude: the full decade step and
+    its half-step (e.g. price 7 -> (1.0, 0.5); 68000 -> (10000, 5000))."""
+    step = 10.0 ** math.floor(math.log10(price))
+    return step, step / 2.0
+
+
+def _psych_adjust_tp(price: float, entry: float, action: str, atr: float | None,
+                     tf: str | None = None) -> float:
+    """Pull a TP that sits just BEYOND a round number to just BEFORE it (the near
+    side, where fills cluster). Full step is checked before the half-step so the
+    stronger barrier wins when both apply. Never crosses entry.
+
+    Gated per-TF: only applied when PSYCH_ROUND_TFS is None (all) or contains `tf`."""
+    if not PSYCH_ROUND or atr is None or atr <= 0 or price <= 0:
+        return price
+    if PSYCH_ROUND_TFS is not None and tf not in PSYCH_ROUND_TFS:
+        return price
+    band, buf = atr * PSYCH_BAND_ATR, atr * PSYCH_BUFFER_ATR
+    for g in _round_grid(price):
+        if action == "SELL":                       # TP below entry; round level above it
+            r = math.ceil(price / g) * g
+            if price < r <= entry and (r - price) <= band:
+                return min(r + buf, entry)
+        else:                                       # BUY; TP above entry; round level below it
+            r = math.floor(price / g) * g
+            if entry <= r < price and (price - r) <= band:
+                return max(r - buf, entry)
+    return price
+
+
 def _tp_candidates(
     entry: float,
     action: str,
     high50: float, low50: float,
     high200: float, low200: float,
     extra: list[tuple[float, str]],
+    atr: float | None = None,
+    tf: str | None = None,
 ) -> list[tuple[float, str]]:
     """All Fib levels on the TP side of entry, sorted closest-first. MAs passed as extra."""
     raw = _all_fib_levels(high50, low50, "Fib50") + _all_fib_levels(high200, low200, "Fib200") + extra
+    raw = [(_psych_adjust_tp(p, entry, action, atr, tf), s) for p, s in raw]
 
     if action == "BUY":
         candidates = [(p, s) for p, s in raw if p > entry]
@@ -160,7 +219,7 @@ def compute_trading_signal(
             elif action == "SELL" and val < close:
                 mas_tp.append((val, name))
 
-    candidates = _tp_candidates(close, action, high50, low50, high200, low200, mas_tp)
+    candidates = _tp_candidates(close, action, high50, low50, high200, low200, mas_tp, atr, p.timeframe)
     if not candidates:
         return None
 

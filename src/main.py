@@ -531,7 +531,56 @@ def main() -> None:
              "every bar. Decouples the trail from sparse structural levels so the stop "
              "reacts between Fib/MA rungs (e.g. 3.0). 0 = off (default).",
     )
+    parser.add_argument(
+        "--breakeven-floor",
+        type=float,
+        default=0.0,
+        metavar="R_MULT",
+        help="(rolling model): arm a break-even stop once profit reaches this many R "
+             "(initial-risk multiples), independent of which ladder rungs were tagged. "
+             "Fixes sparse/single-rung ladders that never ratchet until the TP. The live "
+             "trader uses 1.0; pass --breakeven-floor 1.0 to match it (or sweep to "
+             "validate). 0 = off (default), i.e. the legacy 'arm on rung touch only'.",
+    )
+    parser.add_argument(
+        "--psych-round",
+        action="store_true",
+        help="Round-number awareness on the TAKE-PROFIT, forced ON for ALL scanned "
+             "timeframes (overrides the per-TF gate). Pulls a TP that sits just BEYOND a "
+             "psychological round number (e.g. LINK 7, BTC 10k steps) to just BEFORE it, "
+             "where fills cluster. Grid auto-scales by price magnitude (10^floor(log10 "
+             "price) + half-step). Live default (without this flag) is ON for 1d only "
+             "(robust in an 8.3yr OOS split); neutral-to-negative on 4h. Use this flag to "
+             "sweep the effect on arbitrary TFs.",
+    )
+    parser.add_argument(
+        "--psych-band",
+        type=float,
+        default=0.5,
+        metavar="ATR_MULT",
+        help="How far (in ATR) beyond a round number a TP must be to count as "
+             "'clustered behind it' and get pulled in. Default 0.5.",
+    )
+    parser.add_argument(
+        "--psych-buffer",
+        type=float,
+        default=0.1,
+        metavar="ATR_MULT",
+        help="How far (in ATR) on the near side of the round number to rest the "
+             "adjusted TP. Default 0.1.",
+    )
     args = parser.parse_args()
+
+    # Round-number TP adjustment is a signal-compute setting read via module globals
+    # (like MAKER_TP / BREAKEVEN_FLOOR_R). It is LIVE by default, gated to 1d
+    # (trading_rules.PSYCH_ROUND_TFS); this flag forces it on for all scanned TFs so
+    # the effect can be swept. Set before any scan or backtest runs.
+    if args.psych_round:
+        from src import trading_rules
+        trading_rules.PSYCH_ROUND = True
+        trading_rules.PSYCH_ROUND_TFS = None   # force on for all scanned TFs (sweep mode)
+        trading_rules.PSYCH_BAND_ATR = args.psych_band
+        trading_rules.PSYCH_BUFFER_ATR = args.psych_buffer
 
     config = load_config()
 
@@ -673,7 +722,7 @@ def main() -> None:
             import src.pattern_detector as _pd
             _pd.USE_BODY_ANCHORS = True
             print("  [body-anchors] Fib windows anchored to candle bodies, not wicks")
-        results, date_ranges = run_backtest(config, timeframes=args.timeframes, candles=args.candles, patterns=args.patterns, exit_model=args.exit_model, htf=args.htf, gate=args.gate, dense_grid=args.dense_grid, chandelier=args.chandelier)
+        results, date_ranges = run_backtest(config, timeframes=args.timeframes, candles=args.candles, patterns=args.patterns, exit_model=args.exit_model, htf=args.htf, gate=args.gate, dense_grid=args.dense_grid, chandelier=args.chandelier, breakeven_floor_r=args.breakeven_floor)
         print_backtest_results(results, risk=args.risk, date_ranges=date_ranges, fees=fees)
         if args.risk_pct is not None:
             simulate_pct_wallet(results, args.wallet, args.risk_pct, fees=fees)

@@ -32,9 +32,14 @@ def _expect(trades, fees):
     return sum(rs) / len(rs), len(rs)
 
 
-def run(timeframes, include_disabled, chandelier, no_bearish, candles):
+def run(timeframes, include_disabled, chandelier, no_bearish, candles, psych_round=False):
     config = load_config()
     fees = Fees(taker_side=DEFAULT_FEE_RT / 2, maker_tp=True)
+
+    if psych_round:
+        from src import trading_rules
+        trading_rules.PSYCH_ROUND = True
+        trading_rules.PSYCH_ROUND_TFS = None   # sweep all requested TFs, not just the 1d live gate
 
     patterns = list(config.patterns)
     if no_bearish and "bearish_engulfing" in patterns:
@@ -43,7 +48,7 @@ def run(timeframes, include_disabled, chandelier, no_bearish, candles):
         patterns += [p for p in DISABLED if p not in patterns]
 
     print(f"patterns: {patterns}")
-    print(f"chandelier={chandelier}  fees=on  (expectancy = net R/trade)\n")
+    print(f"chandelier={chandelier}  psych_round={psych_round}  fees=on  (expectancy = net R/trade)\n")
 
     results, date_ranges = run_backtest(
         config, timeframes=timeframes, candles=candles, patterns=patterns,
@@ -90,5 +95,6 @@ if __name__ == "__main__":
     ap.add_argument("--chandelier", type=float, default=0.0)
     ap.add_argument("--no-bearish", action="store_true")
     ap.add_argument("--candles", type=int, default=None)
+    ap.add_argument("--psych-round", action="store_true")
     a = ap.parse_args()
-    run(a.timeframes, a.include_disabled, a.chandelier, a.no_bearish, a.candles)
+    run(a.timeframes, a.include_disabled, a.chandelier, a.no_bearish, a.candles, a.psych_round)
