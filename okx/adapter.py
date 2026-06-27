@@ -90,6 +90,14 @@ class OKXAdapter(ExchangeAdapter):
         self._ensure_map()
         return self._coin(symbol) in self._sym_map
 
+    def is_immediate_trigger_error(self, exc: Exception) -> bool:
+        # OKX rejects a stop already through the market with 51280 ("SL trigger price must
+        # be less/greater than the last price") as a plain InvalidOrder — the twin of
+        # Binance's -2021. Match it so the ladder trail closes instead of erroring.
+        if isinstance(exc, ccxt.OrderImmediatelyFillable):
+            return True
+        return "51280" in str(exc)
+
     def market_order(self, exchange, symbol: str, side: str, amount, *, reduce_only: bool = False):
         params = {"tdMode": self.td_mode}
         if reduce_only:

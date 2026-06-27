@@ -376,16 +376,17 @@ class PositionManager:
                 order = self.adapter.place_stop(self.exchange, pos.symbol, exit_side, pos.contracts, sl_price)
                 new_ids |= self._ids_of(order)
                 sl_status = "placed"
-            except ccxt.OrderImmediatelyFillable:
-                # -2021: market is already at/through the stop level. Resting it
-                # is pointless — the position should be closed now. The existing
-                # orders have NOT been cancelled, so protection stays intact.
-                logger.warning(
-                    "Updated SL for %s at %.4f would trigger immediately (-2021) — "
-                    "leaving existing orders, caller should close", pos.symbol, new_sl,
-                )
-                return "immediate"
-            except Exception:
+            except Exception as e:
+                if self.adapter.is_immediate_trigger_error(e):
+                    # Market is already at/through the stop level (Binance -2021 /
+                    # OKX 51280). Resting it is pointless — the position should be
+                    # closed now. The existing orders have NOT been cancelled, so
+                    # protection stays intact.
+                    logger.warning(
+                        "Updated SL for %s at %.4f would trigger immediately — "
+                        "leaving existing orders, caller should close", pos.symbol, new_sl,
+                    )
+                    return "immediate"
                 logger.exception(
                     "Failed to place updated SL for %s at %.4f — leaving existing orders intact",
                     pos.symbol, new_sl,

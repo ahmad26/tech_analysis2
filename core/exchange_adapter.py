@@ -86,6 +86,13 @@ class ExchangeAdapter:
         attempting them returns 51155 — so the trader skips them up front instead."""
         return True
 
+    def is_immediate_trigger_error(self, exc: Exception) -> bool:
+        """True if `exc` is the venue's 'stop would trigger immediately' rejection — the
+        market is already at/through the stop level, so the trail should CLOSE rather than
+        rest a doomed order. Binance surfaces -2021 as ccxt.OrderImmediatelyFillable; OKX
+        returns 51280 as a plain InvalidOrder, so it overrides to also match that."""
+        return isinstance(exc, ccxt.OrderImmediatelyFillable)
+
     def market_order(self, exchange, symbol: str, side: str, amount, *, reduce_only: bool = False):
         """Market entry/close. Centralised so a venue can attach its required params
         (e.g. OKX's tdMode). `symbol` is the canonical base symbol; translated here."""
