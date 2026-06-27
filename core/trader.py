@@ -100,6 +100,10 @@ class Trader:
         if risk_per_unit <= 0:
             return False
 
+        if not self.adapter.supports_symbol(self.exchange, p.symbol):
+            logger.info("%s not tradable on %s, skipping", p.symbol, self.adapter.label)
+            return False
+
         # Venue symbol for direct ccxt calls (identity on Binance, swap form on OKX).
         # Tracker/alerts/logs keep the base symbol p.symbol; adapter methods translate
         # internally, so they still receive p.symbol.

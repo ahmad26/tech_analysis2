@@ -80,6 +80,12 @@ class ExchangeAdapter:
         'ETH/USDT:USDT' -> 'ETH/USDT'; OKX overrides (its venue symbols are 'ETH/USD:…')."""
         return venue_symbol.split(":")[0]
 
+    def supports_symbol(self, exchange, symbol: str) -> bool:
+        """Whether this venue can actually trade `symbol`. Default True (Binance lists all
+        scanned pairs). OKX overrides: its EEA XPERP set omits some coins (e.g. DOT), and
+        attempting them returns 51155 — so the trader skips them up front instead."""
+        return True
+
     def market_order(self, exchange, symbol: str, side: str, amount, *, reduce_only: bool = False):
         """Market entry/close. Centralised so a venue can attach its required params
         (e.g. OKX's tdMode). `symbol` is the canonical base symbol; translated here."""

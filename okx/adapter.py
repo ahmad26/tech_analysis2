@@ -84,6 +84,12 @@ class OKXAdapter(ExchangeAdapter):
         Coin-only, so it works without the market map loaded."""
         return f"{self._coin(venue_symbol)}/USDT"
 
+    def supports_symbol(self, exchange, symbol: str) -> bool:
+        """True only if the coin has a live XPERP instrument (e.g. DOT does not on EEA).
+        Without this the order falls back to the raw 'DOT/USDT' and fails 51155 every scan."""
+        self._ensure_map()
+        return self._coin(symbol) in self._sym_map
+
     def market_order(self, exchange, symbol: str, side: str, amount, *, reduce_only: bool = False):
         params = {"tdMode": self.td_mode}
         if reduce_only:
