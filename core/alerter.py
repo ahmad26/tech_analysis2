@@ -10,15 +10,18 @@ _TIMEOUT = 10
 
 
 class TelegramAlerter:
-    def __init__(self, bot_token: str, chat_id: str):
+    def __init__(self, bot_token: str, chat_id: str, venue_label: str = ""):
         self._url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         self._chat_id = chat_id
+        # Prefixes every message so a glance tells you which venue it came from
+        # (Binance vs OKX run in parallel into the same Telegram chat).
+        self._prefix = f"[{venue_label}] " if venue_label else ""
 
     def send_alert(self, pattern: DetectedPattern) -> bool:
         try:
             resp = requests.post(
                 self._url,
-                json={"chat_id": self._chat_id, "text": pattern.format_message()},
+                json={"chat_id": self._chat_id, "text": self._prefix + pattern.format_message()},
                 timeout=_TIMEOUT,
             )
             resp.raise_for_status()
@@ -32,7 +35,7 @@ class TelegramAlerter:
         try:
             resp = requests.post(
                 self._url,
-                json={"chat_id": self._chat_id, "text": text},
+                json={"chat_id": self._chat_id, "text": self._prefix + text},
                 timeout=_TIMEOUT,
             )
             resp.raise_for_status()
@@ -42,11 +45,14 @@ class TelegramAlerter:
             return False
 
     def send_position_opened(
-        self, symbol: str, side: str, contracts: float, entry: float, sl: float, tp: float, rr: float
+        self, symbol: str, side: str, contracts: float, entry: float, sl: float, tp: float,
+        rr: float, timeframe: str | None = None,
     ) -> bool:
         arrow = "⬆️ LONG" if side == "long" else "⬇️ SHORT"
+        tf_line = f"Signal TF: {timeframe}\n" if timeframe else ""
         text = (
             f"{arrow} {symbol} opened\n"
+            f"{tf_line}"
             f"Size: {contracts:.4f} @ {entry:.4f}\n"
             f"SL: {sl:.4f} | TP: {tp:.4f}\n"
             f"R/R: 1:{rr:.1f}"

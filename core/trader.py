@@ -239,6 +239,7 @@ class Trader:
                 sl=sl,
                 tp=tp,
                 rr=ts.risk_reward,
+                timeframe=p.timeframe,
             )
 
         return True

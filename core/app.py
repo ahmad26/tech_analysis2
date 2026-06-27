@@ -256,7 +256,7 @@ def _manage_positions_only(config: AppConfig, ctx: VenueContext) -> None:
         logger.error("%s must be set in .env for position management", ", ".join(missing))
         sys.exit(1)
 
-    alerter = TelegramAlerter(config.telegram_bot_token, config.telegram_chat_id)
+    alerter = TelegramAlerter(config.telegram_bot_token, config.telegram_chat_id, venue_label=ctx.label)
     position_tracker = PositionTracker(ctx.position_state, symbol_normalizer=ctx.adapter.base_symbol)
     positions = position_tracker.all()
 
@@ -520,7 +520,7 @@ def main(ctx: VenueContext) -> None:
         logger.error("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env")
         sys.exit(1)
 
-    alerter = TelegramAlerter(config.telegram_bot_token, config.telegram_chat_id)
+    alerter = TelegramAlerter(config.telegram_bot_token, config.telegram_chat_id, venue_label=ctx.label)
     tracker = AlertTracker(ctx.alert_state, config.state_ttl_hours)
 
     trader = None
